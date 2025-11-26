@@ -1,0 +1,37 @@
+# Core web framework & server
+fastapi==0.121.1
+uvicorn[standard]==0.30.6
+
+# File upload support (for model uploads)
+python-multipart==0.0.20
+
+# Pydantic v2 (FastAPI 0.121.x uses this)
+pydantic==2.12.4
+
+# --- Optional: test dependencies (if you want to run the tests) ---
+pytest==8.3.3
+httpx==0.27.2
+
+# SQLModel for SQLite-backed metadata (Phase 1)
+sqlmodel>=0.0.16
+
+# NumPy for mesh caching
+numpy>=1.26.0
+
+# --- Optional: real IGES/STEP geometry support ---
+# The geometry module in this app tries to import `OCP` / pythonOCC,
+# and falls back to a stub cube if it's not installed.
+# Getting OCC set up is platform-specific and usually easier via conda.
+# On many systems there is no simple pip wheel, so we do NOT require it here.
+#
+# Example (CONDA, not pip):
+#   conda install -c conda-forge pythonocc-core
+#
+# If you do manage to install an OCC binding that exposes `OCP`,
+# the app will automatically start using real geometry instead of the stub.
+
+# CadQuery provides a high‑level API for importing STEP/IGES files and
+# tessellating them.  It depends on OCCT under the hood but abstracts
+# away the low‑level details.  Required for the geometry service in
+# FlyV0.9.5.
+cadquery==2.6.1
