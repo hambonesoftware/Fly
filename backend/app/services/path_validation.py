@@ -8,6 +8,7 @@ the model's axis-aligned bounding box.
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, List, Tuple
 
 from ..api.models import PathPoint
@@ -43,35 +44,28 @@ def validate_path(
 
     for idx, p in enumerate(points):
         # Distance to each pair of faces along axes
+        # Compute signed distances from the box; negative values indicate the
+        # point lies inside along that axis.  For clearance we use the
+        # Euclidean distance to the box when outside, and zero when inside.
         dx = 0.0
         if p.x < min_x:
             dx = min_x - p.x
         elif p.x > max_x:
             dx = p.x - max_x
-        else:
-            dx = -min(p.x - min_x, max_x - p.x)
 
         dy = 0.0
         if p.y < min_y:
             dy = min_y - p.y
         elif p.y > max_y:
             dy = p.y - max_y
-        else:
-            dy = -min(p.y - min_y, max_y - p.y)
 
         dz = 0.0
         if p.z < min_z:
             dz = min_z - p.z
         elif p.z > max_z:
             dz = p.z - max_z
-        else:
-            dz = -min(p.z - min_z, max_z - p.z)
 
-        axis_distances = [abs(val) for val in (dx, dy, dz) if val > 0]
-        if axis_distances:
-            clearance = min(axis_distances)
-        else:
-            clearance = 0.0
+        clearance = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         if clearance < min_clearance:
             min_clearance = clearance

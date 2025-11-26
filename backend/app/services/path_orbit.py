@@ -58,8 +58,11 @@ def generate_orbit_path(
     R = max_dim * factor + camera_radius
 
     points: List[PathPoint] = []
+    # Use num_samples points including closure by spanning 0..2pi with
+    # evenly spaced angles where the final point coincides with the first.
+    denom = max(1, num_samples - 1)
     for i in range(num_samples):
-        angle = 2 * math.pi * i / num_samples
+        angle = 2 * math.pi * i / denom
         x = cx + R * math.cos(angle)
         y = cy + R * math.sin(angle)
         z = cz  # keep z constant at model centre
