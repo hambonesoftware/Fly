@@ -285,8 +285,14 @@ def compute_raster_perimeter_polygons(
     max_u = float(np.max(collapsed[:, ax0]))
     min_v = float(np.min(collapsed[:, ax1]))
     max_v = float(np.max(collapsed[:, ax1]))
-    # Add one cell of padding around the bbox to ensure contours close
+    # Add padding around the bbox to ensure contours close.  When a positive
+    # clearance radius is requested we must expand the raster grid far enough
+    # to contain the Minkowski boundary; otherwise the distance field would
+    # be truncated and marching squares would yield no loops for large
+    # clearances.
     padding = cell_size
+    if clearance_radius > 0.0:
+        padding = clearance_radius + cell_size
     min_u -= padding
     min_v -= padding
     max_u += padding
