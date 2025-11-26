@@ -75,6 +75,41 @@ try:
 except Exception:
     np = None  # type: ignore  # fallback will be handled at runtime
 
+
+def _orient_loops_ccw(
+    loops_3d: list[list[tuple[float, float, float]]],
+    ax0: int,
+    ax1: int,
+) -> list[list[tuple[float, float, float]]]:
+    """Return copies of *loops_3d* with counter-clockwise winding.
+
+    The raster perimeter pipeline yields polygon loops without a guaranteed
+    orientation. Some downstream consumers (for example, polygon
+    triangulators) assume outer rings are counter-clockwise. This helper
+    projects each loop onto the active plane axes and reverses the vertex
+    order when the signed area is negative. Degenerate loops are left
+    unchanged.
+    """
+
+    from .slicing import _polygon_area_2d  # Local import to avoid cycles
+
+    oriented: list[list[tuple[float, float, float]]] = []
+    for loop in loops_3d:
+        if len(loop) < 3:
+            oriented.append(loop)
+            continue
+        try:
+            uv_loop = [(pt[ax0], pt[ax1]) for pt in loop]
+            area = _polygon_area_2d(uv_loop)
+        except Exception:
+            oriented.append(loop)
+            continue
+        if area < 0.0:
+            oriented.append(list(reversed(loop)))
+        else:
+            oriented.append(loop)
+    return oriented
+
 ########################################################################################
 # Raster‑based perimeter extraction
 #
@@ -451,6 +486,8 @@ def compute_raster_perimeter_polygons(
         max_idx = max(range(len(filtered_loops)), key=lambda i: filtered_areas[i])
         filtered_loops = [filtered_loops[max_idx]]
         filtered_areas = [filtered_areas[max_idx]]
+    # Normalise winding so outer loops follow CCW orientation on the active plane
+    filtered_loops = _orient_loops_ccw(filtered_loops, ax0, ax1)
     total_points = sum(len(loop) for loop in filtered_loops)
     # Build metadata
     meta: dict[str, float | str | int | None | dict[str, float]] = {
