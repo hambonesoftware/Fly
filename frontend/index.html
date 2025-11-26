@@ -14,93 +14,21 @@
       <input type="file" id="fileInput" accept=".igs,.iges,.stp,.step" />
       <button id="uploadButton">Upload and Load Model</button>
       <button id="computePathButton">Compute Path</button>
-      <!-- Strategy selection for path generation -->
-      <label for="strategySelect">Path Strategy</label>
-      <select id="strategySelect">
-        <option value="perimeter" selected>Perimeter (recommended)</option>
-        <option value="orbit">Orbit</option>
-      </select>
-      <!-- Phase 4 tuning controls -->
-      <label for="bulgeInput">Bulge</label>
-      <input id="bulgeInput" type="number" min="0" max="1" step="0.1" value="0">
-      <label for="smoothnessInput">Smoothness</label>
-      <input id="smoothnessInput" type="number" min="0" max="1" step="0.1" value="0.5">
-
-      <!-- Plane selection and height offset for perimeter slicing (Phase 6) -->
+      <!-- Plane selection for perimeter slicing (Phase 6) -->
       <label for="planeSelect">Plane</label>
       <select id="planeSelect">
         <option value="xy" selected>XY</option>
         <option value="xz">XZ</option>
         <option value="yz">YZ</option>
       </select>
-      <label for="heightOffsetInput">Height Offset</label>
-      <input id="heightOffsetInput" type="number" step="0.1" value="0">
-
-      <!-- Advanced perimeter options (Phase 5) placed inside a collapsible details
-           element to avoid cluttering the primary UI.  These controls allow
-           the user to adjust the level of detail for slice‑based paths and
-           toggle spline fitting. -->
-      <details id="perimeterOptions">
-        <summary>Perimeter Options</summary>
-        <div class="perimeter-options">
-          <label for="perimeterDetailSelect">Detail</label>
-          <select id="perimeterDetailSelect">
-            <option value="auto" selected>Auto</option>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-          </select>
-          <label for="useSplineCheckbox">Use Spline Path</label>
-          <input id="useSplineCheckbox" type="checkbox" checked>
-          <label>
-            <input type="checkbox" id="useModelOutlineCheckbox" />
-            Use model outline for perimeter path
-          </label>
-          <label for="outlineStitchToleranceInput">Outline stitch tolerance</label>
-          <input
-            id="outlineStitchToleranceInput"
-            type="number"
-            step="0.0001"
-            min="0"
-            placeholder="auto"
-          >
-          <label for="outlineDetailSelect">Outline detail</label>
-          <select id="outlineDetailSelect">
-            <option value="">Auto</option>
-            <option value="low">Coarse</option>
-            <option value="medium">Medium</option>
-            <option value="high">Fine</option>
-          </select>
-
-        <!-- New in v0.9.7: relative stitching and island mode controls -->
-        <label>
-          Outline stitch %
-          <input id="outlineStitchPercentInput" type="number" min="0" max="100" step="1" value="2" />
-        </label>
-
-        <label>
-          Island mode
-          <select id="perimeterIslandModeSelect">
-            <option value="single">Single silhouette</option>
-            <option value="multi">Multi-island paths</option>
-          </select>
-        </label>
-
-        <!-- New in v0.9.11: controls for rolling‑circle perimeter paths -->
-        <label>
-          <input type="checkbox" id="useRollingCircleCheckbox" />
-          Use rolling-circle perimeter path
-        </label>
-        <label for="circleDiameterInput">Camera circle diameter</label>
-        <input
-          id="circleDiameterInput"
-          type="number"
-          step="0.1"
-          min="0"
-          placeholder="auto"
-        />
-        </div>
-      </details>
+      <label for="circleDiameterInput">Camera circle diameter</label>
+      <input
+        id="circleDiameterInput"
+        type="number"
+        step="0.1"
+        min="0"
+        placeholder="auto"
+      />
       <!-- New Find Perimeter button introduced in v0.9.9.  Clicking this
            button computes the collapsed mesh perimeter using the
            selected options and draws it in the viewer.  Users must

@@ -395,8 +395,11 @@ export function showMinkowskiBoundary(loops) {
   );
 
   const material = new THREE.LineBasicMaterial({
-    color: 0xff00ff,
+    color: 0x00ff80,
     linewidth: 2,
+    transparent: true,
+    opacity: 0.9,
+    blending: THREE.AdditiveBlending,
   });
 
   for (const loop of minkowskiBoundaryLoops) {

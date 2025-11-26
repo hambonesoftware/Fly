@@ -39,6 +39,19 @@ import { getOutline, getPerimeter } from './apiClient.js';
 // perimeter strategy by default.
 const DEFAULT_CAMERA_RADIUS = 20.0;
 const DEFAULT_SAMPLING_RES = [80, 80, 80];
+const HIGH_QUALITY_TUNING = {
+  bulgeFactor: 0.0,
+  smoothness: 0.8,
+};
+const HIGH_QUALITY_PERIMETER = {
+  perimeterDetail: 'high',
+  useSpline: true,
+  useModelOutline: true,
+  outlineDetail: 'high',
+  outlineStitchPercent: 2,
+  perimeterIslandMode: 'multi',
+  perimeterUseRollingCircle: true,
+};
 
 // Keep track of the current model and path identifiers
 let currentModelId = null;
@@ -56,23 +69,8 @@ function bootstrap() {
   const uploadButton = document.getElementById('uploadButton');
   const computePathButton = document.getElementById('computePathButton');
   const findPerimeterButton = document.getElementById('findPerimeterButton');
-  // Strategy selector added in Phase 2.  Allows users to choose
-  // between perimeter and orbit strategies (perimeter is default).
-  const strategySelect = document.getElementById('strategySelect');
   // Plane selection and height offset controls (Phase 6)
   const planeSelect = document.getElementById('planeSelect');
-  const heightOffsetInput = document.getElementById('heightOffsetInput');
-  // Perimeter detail and spline controls (Phase 5 + 6b)
-  const perimeterDetailSelect = document.getElementById('perimeterDetailSelect');
-  const useSplineCheckbox = document.getElementById('useSplineCheckbox');
-  const useModelOutlineCheckbox = document.getElementById('useModelOutlineCheckbox');
-  const outlineStitchToleranceInput = document.getElementById('outlineStitchToleranceInput');
-  const outlineDetailSelect = document.getElementById('outlineDetailSelect');
-  // New controls introduced in v0.9.7
-  const outlineStitchPercentInput = document.getElementById('outlineStitchPercentInput');
-  const perimeterIslandModeSelect = document.getElementById('perimeterIslandModeSelect');
-  // New controls introduced in v0.9.11 for rolling‑circle perimeter paths
-  const useRollingCircleCheckbox = document.getElementById('useRollingCircleCheckbox');
   const circleDiameterInput = document.getElementById('circleDiameterInput');
   const canvas = document.getElementById('viewerCanvas');
   const modelListDiv = document.getElementById('modelList');
@@ -92,43 +90,18 @@ function bootstrap() {
     if (!currentModelId) return;
     // Compose parameters
     const planeVal = planeSelect ? planeSelect.value : 'xy';
-    let heightVal = 0.0;
-    if (heightOffsetInput && heightOffsetInput.value !== '') {
-      const parsed = parseFloat(heightOffsetInput.value);
-      if (!isNaN(parsed)) heightVal = parsed;
-    }
-    const useOutline = !!(useModelOutlineCheckbox && useModelOutlineCheckbox.checked);
-    let stitchTol = null;
-    if (outlineStitchToleranceInput && outlineStitchToleranceInput.value !== '') {
-      const parsedTol = parseFloat(outlineStitchToleranceInput.value);
-      if (!Number.isNaN(parsedTol) && parsedTol >= 0) {
-        stitchTol = parsedTol;
-      }
-    }
-    let detail = null;
-    if (outlineDetailSelect) {
-      const d = outlineDetailSelect.value;
-      detail = d || null;
-    }
-    // New relative stitch percent and island mode
-    let stitchPercentVal = null;
-    if (outlineStitchPercentInput && outlineStitchPercentInput.value !== '') {
-      const parsedPct = parseFloat(outlineStitchPercentInput.value);
-      if (!Number.isNaN(parsedPct)) {
-        stitchPercentVal = parsedPct;
-      }
-    }
-    const islandModeVal = perimeterIslandModeSelect ? perimeterIslandModeSelect.value : 'single';
+    const stitchPercentVal = HIGH_QUALITY_PERIMETER.outlineStitchPercent;
+    const islandModeVal = HIGH_QUALITY_PERIMETER.perimeterIslandMode;
     // Fetch outline from backend
     setBusy(true);
     setStatus('Updating outline preview…');
     try {
       const resp = await getOutline(currentModelId, {
         plane: planeVal,
-        heightOffset: heightVal,
-        useModelOutline: useOutline,
-        outlineStitchTolerance: stitchTol,
-        outlineDetail: detail,
+        heightOffset: 0.0,
+        useModelOutline: HIGH_QUALITY_PERIMETER.useModelOutline,
+        outlineStitchTolerance: null,
+        outlineDetail: HIGH_QUALITY_PERIMETER.outlineDetail,
         outlineStitchPercent: stitchPercentVal,
         perimeterIslandMode: islandModeVal,
       });
@@ -171,18 +144,9 @@ function bootstrap() {
     }
     // Collect parameters from UI
     const planeVal = planeSelect ? planeSelect.value : 'xy';
-    let stitchPercentVal = null;
-    if (outlineStitchPercentInput && outlineStitchPercentInput.value !== '') {
-      const parsedPct = parseFloat(outlineStitchPercentInput.value);
-      if (!Number.isNaN(parsedPct)) {
-        stitchPercentVal = parsedPct;
-      }
-    }
-    const islandModeVal = perimeterIslandModeSelect ? perimeterIslandModeSelect.value : 'single';
-    let detailVal = null;
-    if (perimeterDetailSelect) {
-      detailVal = perimeterDetailSelect.value || null;
-    }
+    const stitchPercentVal = HIGH_QUALITY_PERIMETER.outlineStitchPercent;
+    const islandModeVal = HIGH_QUALITY_PERIMETER.perimeterIslandMode;
+    const detailVal = HIGH_QUALITY_PERIMETER.perimeterDetail;
     setBusy(true);
     setStatus('Finding perimeter…');
     try {
@@ -332,62 +296,23 @@ function bootstrap() {
     try {
       // Determine strategy and parameters from UI.  Default to
       // perimeter if the element is missing.
-      const strategy = strategySelect ? strategySelect.value : 'perimeter';
+      const strategy = 'perimeter';
       const cameraRadius = DEFAULT_CAMERA_RADIUS;
       const samplingResolution = DEFAULT_SAMPLING_RES;
-      // Read bulge and smoothness inputs from the UI.  These are optional
-      // tuning parameters for the perimeter strategy introduced in Phase 4.
-      const bulgeInput = document.getElementById('bulgeInput');
-      const smoothnessInput = document.getElementById('smoothnessInput');
-      const bulgeVal = bulgeInput ? parseFloat(bulgeInput.value) : 0.0;
-      const smoothVal = smoothnessInput ? parseFloat(smoothnessInput.value) : 0.5;
-      // Determine plane and height offset from the UI.  These fields are
-      // optional and are only used by the perimeter strategy; the
-      // backend provides defaults when omitted.  Height offset may
-      // parse to NaN if the input is empty; guard against this.
+      // Determine plane from the UI and apply high-quality defaults for
+      // all other perimeter parameters. Height offset is fixed at zero to
+      // slice through the model centerline.
       const planeVal = planeSelect ? planeSelect.value : 'xy';
-      let heightVal = 0.0;
-      if (heightOffsetInput && heightOffsetInput.value !== '') {
-        const parsed = parseFloat(heightOffsetInput.value);
-        if (!isNaN(parsed)) heightVal = parsed;
-      }
-      // Read advanced perimeter options.  If the select or checkbox is
-      // missing (e.g. in older UIs), the values will be undefined and
-      // omitted from the request body.  The backend treats undefined
-      // perimeterDetail and useSpline as defaults.
-      let detailVal;
-      if (perimeterDetailSelect) {
-        detailVal = perimeterDetailSelect.value;
-      }
-      let useSplineVal;
-      if (useSplineCheckbox) {
-        useSplineVal = useSplineCheckbox.checked;
-      }
-      let outlineStitchTolVal = null;
-      if (outlineStitchToleranceInput && outlineStitchToleranceInput.value !== '') {
-        const parsedOutlineTol = parseFloat(outlineStitchToleranceInput.value);
-        if (!Number.isNaN(parsedOutlineTol) && parsedOutlineTol >= 0) {
-          outlineStitchTolVal = parsedOutlineTol;
-        }
-      }
-      let outlineDetailVal = null;
-      if (outlineDetailSelect) {
-        const od = outlineDetailSelect.value;
-        outlineDetailVal = od || null;
-      }
-      // Read new outline stitch percent and island mode values (v0.9.7)
-      let outlineStitchPercentVal = null;
-      if (outlineStitchPercentInput && outlineStitchPercentInput.value !== '') {
-        const parsedPct = parseFloat(outlineStitchPercentInput.value);
-        if (!Number.isNaN(parsedPct)) {
-          outlineStitchPercentVal = parsedPct;
-        }
-      }
-      const perimeterIslandModeVal = perimeterIslandModeSelect ? perimeterIslandModeSelect.value : 'single';
-      // Read rolling‑circle perimeter options.  These fields are optional and
-      // default to false/auto when not provided.  The numeric field
-      // accepts any positive value; non‑numeric or empty values result in null.
-      const useRollingCircle = useRollingCircleCheckbox ? useRollingCircleCheckbox.checked : false;
+      const bulgeVal = HIGH_QUALITY_TUNING.bulgeFactor;
+      const smoothVal = HIGH_QUALITY_TUNING.smoothness;
+      const heightVal = 0.0;
+      const detailVal = HIGH_QUALITY_PERIMETER.perimeterDetail;
+      const useSplineVal = HIGH_QUALITY_PERIMETER.useSpline;
+      const outlineStitchTolVal = null;
+      const outlineDetailVal = HIGH_QUALITY_PERIMETER.outlineDetail;
+      const outlineStitchPercentVal = HIGH_QUALITY_PERIMETER.outlineStitchPercent;
+      const perimeterIslandModeVal = HIGH_QUALITY_PERIMETER.perimeterIslandMode;
+      const useRollingCircle = HIGH_QUALITY_PERIMETER.perimeterUseRollingCircle;
       let circleDiameterVal = null;
       if (circleDiameterInput && circleDiameterInput.value !== '') {
         const parsedCircle = parseFloat(circleDiameterInput.value);
@@ -405,7 +330,7 @@ function bootstrap() {
         heightOffset: heightVal,
         perimeterDetail: detailVal,
         useSpline: useSplineVal,
-        useModelOutline: !!(useModelOutlineCheckbox && useModelOutlineCheckbox.checked),
+        useModelOutline: HIGH_QUALITY_PERIMETER.useModelOutline,
         outlineStitchTolerance: outlineStitchTolVal,
         outlineDetail: outlineDetailVal,
         outlineStitchPercent: outlineStitchPercentVal,
@@ -420,13 +345,17 @@ function bootstrap() {
       showPath(lastPathPoints);
       // Render Minkowski boundary loops when available
       const minkowskiLoops = pathResponse.minkowskiBoundaryLoops;
+      let minkowskiNote = '';
       if (minkowskiLoops && Array.isArray(minkowskiLoops) && minkowskiLoops.length > 0) {
         const normalizedLoops = minkowskiLoops.map((loop) =>
           loop.map((p) => ({ x: p.x, y: p.y, z: p.z }))
         );
         showMinkowskiBoundary(normalizedLoops);
+        minkowskiNote = ' Minkowski boundary rendered in glowing green.';
       } else {
         showMinkowskiBoundary([]);
+        minkowskiNote = ' No Minkowski boundary returned from backend.';
+        isWarning = true;
       }
       // Compose status message including plane and height offset when using the
       // perimeter strategy.  For orbit strategy we omit these details.  We
@@ -465,7 +394,7 @@ function bootstrap() {
       if (isWarning) {
         statusMsg = `⚠ ${statusMsg}`;
       }
-      statusMsg += '. You can drag the green spheres to edit it.';
+      statusMsg += `${minkowskiNote} You can drag the green spheres to edit it.`;
       setStatus(statusMsg, false, isWarning);
       // Show the base outline from the response metadata if available.  This
       // provides a visual reference for the clearance used when generating
