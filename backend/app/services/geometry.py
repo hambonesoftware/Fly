@@ -57,6 +57,10 @@ from .models_store import (
     update_models_status_for_binary,
 )
 from .mesh_cache import save_mesh_cache, load_mesh_cache
+from .raster_utils import (
+    _compute_distance_field_from_occupancy,
+    _marching_squares_distance_field,
+)
 
 from ..api.models import MeshResponse, MeshBBox
 
@@ -125,12 +129,15 @@ def collapse_vertices_to_plane_with_axes(vertices: 'np.ndarray', plane: str) -> 
         raise ValueError(f"Unsupported plane: {plane}")
 
 
+
+
 def compute_raster_perimeter_polygons(
     model_id: str,
     plane: str = 'xy',
     detail: str | None = None,
     island_mode: str = 'single',
     outline_stitch_percent: float | None = None,
+    clearance_radius: float = 0.0,
 ) -> tuple[list[list[tuple[float, float, float]]], list[float], dict]:
     """
     Compute perimeter polygons using a raster grid and marching squares.
@@ -143,7 +150,11 @@ def compute_raster_perimeter_polygons(
     outer islands.  The detail parameter controls the raster resolution: low
     yields a coarse grid, high yields a fine grid.  The ``outline_stitch_percent``
     argument is accepted for API compatibility but does not influence the
-    raster engine; its value is recorded in the metadata.
+    raster engine; its value is recorded in the metadata. When
+    ``clearance_radius`` is positive, the occupancy grid of all bodies is first
+    collapsed into a single mask, a distance field is computed from that union
+    and an iso-contour at the requested clearance is extracted to realise a
+    union-first Minkowski boundary.
 
     Args:
         model_id: Identifier of the model to process.
@@ -340,124 +351,26 @@ def compute_raster_perimeter_polygons(
         )
     else:
         timings['morphology'] = 0.0
-    # Marching squares contour extraction
+    # Union-first Minkowski boundary via distance field then iso-contour
     ms_start = time.perf_counter()
-    # Preallocate adjacency map of segments: key is rounded 2D point, value list of neighbours
-    adjacency: dict[tuple[float, float], list[tuple[float, float]]] = {}
-    # Helper to add a segment between two points
-    def _add_edge(p0: tuple[float, float], p1: tuple[float, float]) -> None:
-        # Round coordinates for stable hashing
-        key0 = (round(p0[0], 10), round(p0[1], 10))
-        key1 = (round(p1[0], 10), round(p1[1], 10))
-        adjacency.setdefault(key0, []).append(key1)
-        adjacency.setdefault(key1, []).append(key0)
-    # Iterate over grid cells (excluding last row/col)
-    for row in range(height - 1):
-        for col in range(width - 1):
-            # Occupancy of the 2x2 cell corners: top-left, top-right, bottom-right, bottom-left
-            tl = grid[row, col]
-            tr = grid[row, col + 1]
-            br = grid[row + 1, col + 1]
-            bl = grid[row + 1, col]
-            # Compute pattern
-            pattern = (tl << 0) | (tr << 1) | (br << 2) | (bl << 3)
-            if pattern == 0 or pattern == 15:
-                continue  # no edges
-            # Coordinates of cell corners (in world units)
-            # Compute base world coordinates of top-left corner of cell
-            base_x = min_u + col * cell_size
-            base_y = min_v + row * cell_size
-            # Map pattern to edges
-            if pattern in {1, 14}:  # (bl only) or (all but bl)
-                p0 = (base_x + 0.0 * cell_size, base_y + 0.5 * cell_size)
-                p1 = (base_x + 0.5 * cell_size, base_y + 0.0 * cell_size)
-                _add_edge(p0, p1)
-            if pattern in {2, 13}:  # (tr only) or (all but tr)
-                p0 = (base_x + 0.5 * cell_size, base_y + 0.0 * cell_size)
-                p1 = (base_x + 1.0 * cell_size, base_y + 0.5 * cell_size)
-                _add_edge(p0, p1)
-            if pattern in {3, 12}:  # (bl + tr) or (tl + br)
-                p0 = (base_x + 0.0 * cell_size, base_y + 0.5 * cell_size)
-                p1 = (base_x + 1.0 * cell_size, base_y + 0.5 * cell_size)
-                _add_edge(p0, p1)
-            if pattern in {4, 11}:  # (br only) or (all but br)
-                p0 = (base_x + 1.0 * cell_size, base_y + 0.5 * cell_size)
-                p1 = (base_x + 0.5 * cell_size, base_y + 1.0 * cell_size)
-                _add_edge(p0, p1)
-            if pattern == 5:  # (bl + br)
-                p0 = (base_x + 0.0 * cell_size, base_y + 0.5 * cell_size)
-                p1 = (base_x + 0.5 * cell_size, base_y + 0.0 * cell_size)
-                _add_edge(p0, p1)
-                p2 = (base_x + 1.0 * cell_size, base_y + 0.5 * cell_size)
-                p3 = (base_x + 0.5 * cell_size, base_y + 1.0 * cell_size)
-                _add_edge(p2, p3)
-            if pattern == 6:  # (tr + br)
-                p0 = (base_x + 0.5 * cell_size, base_y + 0.0 * cell_size)
-                p1 = (base_x + 0.5 * cell_size, base_y + 1.0 * cell_size)
-                _add_edge(p0, p1)
-            if pattern == 7:  # (tl + tr + br)
-                p0 = (base_x + 0.0 * cell_size, base_y + 0.5 * cell_size)
-                p1 = (base_x + 0.5 * cell_size, base_y + 1.0 * cell_size)
-                _add_edge(p0, p1)
-            if pattern == 8:  # (tl only)
-                p0 = (base_x + 0.5 * cell_size, base_y + 1.0 * cell_size)
-                p1 = (base_x + 0.0 * cell_size, base_y + 0.5 * cell_size)
-                _add_edge(p0, p1)
-            if pattern == 9:  # (tl + bl)
-                p0 = (base_x + 0.5 * cell_size, base_y + 1.0 * cell_size)
-                p1 = (base_x + 0.5 * cell_size, base_y + 0.0 * cell_size)
-                _add_edge(p0, p1)
-            if pattern == 10:  # (tl + br)
-                p0 = (base_x + 0.5 * cell_size, base_y + 0.0 * cell_size)
-                p1 = (base_x + 1.0 * cell_size, base_y + 0.5 * cell_size)
-                _add_edge(p0, p1)
-                p2 = (base_x + 0.5 * cell_size, base_y + 1.0 * cell_size)
-                p3 = (base_x + 0.0 * cell_size, base_y + 0.5 * cell_size)
-                _add_edge(p2, p3)
-            if pattern in {11}:  # (tl + tr + bl)
-                p0 = (base_x + 1.0 * cell_size, base_y + 0.5 * cell_size)
-                p1 = (base_x + 0.5 * cell_size, base_y + 1.0 * cell_size)
-                _add_edge(p0, p1)
-            if pattern in {12}:  # handled above
-                pass
-            if pattern in {13}:  # handled above
-                pass
-            if pattern in {14}:  # handled above
-                pass
-    # Stitch segments into loops
-    loops_uv: list[list[tuple[float, float]]] = []
-    while adjacency:
-        # Start from an arbitrary point
-        start = next(iter(adjacency))
-        path = [start]
-        current = start
-        prev: tuple[float, float] | None = None
-        # Walk until we close the loop
-        while True:
-            neighbours = adjacency.get(current)
-            if not neighbours:
-                break
-            # Choose next neighbour (prefer not going back to prev)
-            if prev and neighbours:
-                # Avoid going back if possible
-                next_pt = neighbours[0]
-                if len(neighbours) > 1 and neighbours[0] == prev:
-                    next_pt = neighbours[1]
-            else:
-                next_pt = neighbours[0]
-            # Remove the edge from adjacency (both directions)
-            adjacency[current].remove(next_pt)
-            if not adjacency[current]:
-                adjacency.pop(current, None)
-            adjacency[next_pt].remove(current)
-            if not adjacency.get(next_pt):
-                adjacency.pop(next_pt, None)
-            prev, current = current, next_pt
-            if current == start:
-                break
-            path.append(current)
-        if len(path) >= 3:
-            loops_uv.append(path)
+    if clearance_radius > 0.0:
+        distance_field = _compute_distance_field_from_occupancy(grid, cell_size)
+        loops_uv = _marching_squares_distance_field(
+            distance_field,
+            threshold=clearance_radius,
+            cell_size=cell_size,
+            min_u=min_u,
+            min_v=min_v,
+        )
+    else:
+        # Backwards-compatible outline extraction when no clearance is requested
+        loops_uv = _marching_squares_distance_field(
+            grid.astype(float),
+            threshold=0.5,
+            cell_size=cell_size,
+            min_u=min_u,
+            min_v=min_v,
+        )
     ms_elapsed = time.perf_counter() - ms_start
     timings['marching_squares'] = ms_elapsed
     logger.debug(
@@ -549,6 +462,7 @@ def compute_raster_perimeter_polygons(
         'totalLoops': len(filtered_loops),
         'totalPoints': total_points,
         'timings': timings,
+        'clearanceRadius': max(0.0, clearance_radius),
     }
     # Record unused outline stitch percent for completeness
     meta['outlineStitchPercent'] = outline_stitch_percent

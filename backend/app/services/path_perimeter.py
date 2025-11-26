@@ -228,6 +228,7 @@ def generate_rolling_circle_perimeter_path(
             detail=(perimeter_detail or "auto"),
             island_mode=island_mode,
             outline_stitch_percent=None,
+            clearance_radius=max(0.0, circle_radius + base_clearance),
         )
         # Unpack loops; older versions may return just loops
         if isinstance(result, tuple) and len(result) >= 1:
