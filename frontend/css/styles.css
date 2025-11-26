@@ -8,6 +8,9 @@ html, body {
 }
 
 body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
   background-color: #202020;
   color: #f0f0f0;
 }
@@ -16,7 +19,9 @@ body {
 #app {
   display: flex;
   flex-direction: row;
-  height: calc(100vh - 60px);
+  flex: 1;
+  min-height: 0;
+  width: 100%;
 }
 
 header.header {
@@ -126,10 +131,12 @@ body.busy {
 
 /* Viewer container */
 #viewerContainer {
-  flex: 1;
+  flex: 1 1 auto;
   position: relative;
   overflow: hidden;
   background-color: #101010;
+  min-height: 0;
+  min-width: 0;
 }
 
 #viewerCanvas {
