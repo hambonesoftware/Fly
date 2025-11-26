@@ -346,6 +346,7 @@ function bootstrap() {
       // Render Minkowski boundary loops when available
       const minkowskiLoops = pathResponse.minkowskiBoundaryLoops;
       let minkowskiNote = '';
+      let isWarning = false;
       if (minkowskiLoops && Array.isArray(minkowskiLoops) && minkowskiLoops.length > 0) {
         const normalizedLoops = minkowskiLoops.map((loop) =>
           loop.map((p) => ({ x: p.x, y: p.y, z: p.z }))
@@ -362,7 +363,6 @@ function bootstrap() {
       // also surface extra metadata such as self‑intersection and offset
       // adjustments to help users understand any warnings.
       let statusMsg = `Path computed using '${strategy}' strategy (radius=${cameraRadius}, points=${lastPathPoints.length})`;
-      let isWarning = false;
       if (strategy === 'perimeter') {
         statusMsg += ` on ${planeVal.toUpperCase()} plane at offset ${heightVal}`;
         if (pathResponse.metadata) {
