@@ -210,6 +210,13 @@ class PathResponse(BaseModel):
     metadata: Dict[str, Any] = Field(
         ..., description="Additional metadata such as length and strategy"
     )
+    minkowskiBoundaryLoops: List[List[PathPoint]] | None = Field(
+        default=None,
+        description=(
+            "Optional Minkowski boundary loops used to generate perimeter paths. "
+            "Each loop is provided as an ordered list of points."
+        ),
+    )
 
 
 class PathValidateRequest(BaseModel):
