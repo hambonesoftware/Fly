@@ -3,7 +3,7 @@
 fly/Lib/
 *.env
 *.STEP
-*.STP
-*.stp
+
+
 fly/
 *.npz
