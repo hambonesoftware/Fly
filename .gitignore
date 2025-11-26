@@ -6,3 +6,4 @@ fly/Lib/
 *.STP
 *.stp
 fly/
+*.npz
