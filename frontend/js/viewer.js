@@ -54,6 +54,13 @@ let baseOutlineLines = [];
 // visualisations).  Each element is an array of point objects.
 let baseOutlineLoops = [];
 
+// Small marker to visualise the tangent contact point between the
+// rolling circle and the nearest perimeter loop.  When active, this
+// is positioned on the closest point of the outline to the circle
+// centre.  The marker radius scales with the circle radius.
+let rollingCircleContactMesh = null;
+let rollingCircleContactRadius = 0.2;
+
 // Rolling circle visualisation state.  When a rolling-circle
 // perimeter path is generated, we can animate a red circle along
 // the path.  These variables track the circle mesh, the path
@@ -62,9 +69,10 @@ let baseOutlineLoops = [];
 let rollingCircleMesh = null;
 let rollingCirclePathPoints = [];
 let rollingCircleRadius = 1.0;
-let rollingCircleSpeed = 0.05; // fraction of path per frame (approximate)
+let rollingCircleSpeed = 0.05; // fraction of path per second
 let rollingCircleT = 0.0;
 let rollingCircleActive = false;
+let rollingCircleLastUpdateTime = null;
 
 /**
  * Create or recreate the rolling circle mesh with the given
@@ -106,6 +114,90 @@ function createRollingCircleMesh(radius, plane) {
 }
 
 /**
+ * Remove the tangent contact marker, disposing its resources.
+ */
+function disposeRollingCircleContact() {
+  if (rollingCircleContactMesh) {
+    scene.remove(rollingCircleContactMesh);
+    if (rollingCircleContactMesh.geometry) rollingCircleContactMesh.geometry.dispose();
+    if (rollingCircleContactMesh.material) rollingCircleContactMesh.material.dispose();
+    rollingCircleContactMesh = null;
+  }
+}
+
+/**
+ * Find the closest point on the stored perimeter loops to the given
+ * position. Returns an object with the point and squared distance.
+ *
+ * @param {THREE.Vector3} position - Position to test
+ * @returns {{point: {x:number,y:number,z:number}, dist2: number}|null}
+ */
+function findNearestPointOnOutline(position) {
+  if (!baseOutlineLoops.length) return null;
+  let bestPoint = null;
+  let bestDist2 = Infinity;
+
+  const nearestOnSegment = (a, b) => {
+    const ab = new THREE.Vector3(b.x - a.x, b.y - a.y, b.z - a.z);
+    const ap = new THREE.Vector3(position.x - a.x, position.y - a.y, position.z - a.z);
+    const abLen2 = ab.lengthSq();
+    if (abLen2 === 0) return { x: a.x, y: a.y, z: a.z };
+    let t = ap.dot(ab) / abLen2;
+    t = Math.max(0, Math.min(1, t));
+    return {
+      x: a.x + ab.x * t,
+      y: a.y + ab.y * t,
+      z: a.z + ab.z * t,
+    };
+  };
+
+  for (const loop of baseOutlineLoops) {
+    if (!loop || loop.length < 2) continue;
+    for (let i = 0; i < loop.length; i++) {
+      const a = loop[i];
+      const b = loop[(i + 1) % loop.length];
+      const npt = nearestOnSegment(a, b);
+      const dx = npt.x - position.x;
+      const dy = npt.y - position.y;
+      const dz = npt.z - position.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < bestDist2) {
+        bestDist2 = d2;
+        bestPoint = npt;
+      }
+    }
+  }
+
+  if (!bestPoint) return null;
+  return { point: bestPoint, dist2: bestDist2 };
+}
+
+/**
+ * Ensure the contact marker exists and update its position to the
+ * nearest point on the stored perimeter outline to the provided
+ * centre position. If no outline is available, the marker is removed.
+ *
+ * @param {THREE.Vector3} centre - Current rolling circle centre
+ */
+function updateRollingCircleContact(centre) {
+  if (!scene) return;
+  const nearest = findNearestPointOnOutline(centre);
+  if (!nearest) {
+    disposeRollingCircleContact();
+    return;
+  }
+
+  if (!rollingCircleContactMesh) {
+    const geometry = new THREE.SphereGeometry(rollingCircleContactRadius, 16, 12);
+    const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    rollingCircleContactMesh = new THREE.Mesh(geometry, material);
+    scene.add(rollingCircleContactMesh);
+  }
+
+  rollingCircleContactMesh.position.set(nearest.point.x, nearest.point.y, nearest.point.z);
+}
+
+/**
  * Start the rolling-circle perimeter animation.  The caller must
  * provide the path points (centre positions), circle radius and the
  * plane in which the circle should lie.  Optionally a speed can be
@@ -131,11 +223,31 @@ export function startPerimeterCircleAnimation(options = {}) {
   // Set radius and speed, using defaults when inputs are invalid
   rollingCircleRadius = typeof radius === 'number' && radius > 0 ? radius : 1.0;
   rollingCircleSpeed = typeof speed === 'number' && speed > 0 ? speed : 0.05;
+  rollingCircleContactRadius = Math.max(rollingCircleRadius * 0.12, 0.05);
   rollingCircleT = 0.0;
   rollingCircleActive = true;
+  rollingCircleLastUpdateTime = null;
   // Create the circle mesh oriented to the selected plane
   const planeVal = plane || 'xy';
   createRollingCircleMesh(rollingCircleRadius, planeVal);
+  // Reset contact marker so it can be recreated with updated size
+  disposeRollingCircleContact();
+}
+
+/**
+ * Stop the rolling-circle animation and dispose any associated meshes.
+ */
+export function stopPerimeterCircleAnimation() {
+  rollingCircleActive = false;
+  rollingCirclePathPoints = [];
+  rollingCircleLastUpdateTime = null;
+  if (rollingCircleMesh) {
+    scene.remove(rollingCircleMesh);
+    if (rollingCircleMesh.geometry) rollingCircleMesh.geometry.dispose();
+    if (rollingCircleMesh.material) rollingCircleMesh.material.dispose();
+    rollingCircleMesh = null;
+  }
+  disposeRollingCircleContact();
 }
 
 /**
@@ -211,7 +323,7 @@ export function initViewer(canvasElement) {
     renderer.setSize(width, height);
   });
   // Render loop
-  function animate() {
+  function animate(time) {
     requestAnimationFrame(animate);
     if (controls) controls.update();
     // Make the key light follow the camera position to create a
@@ -226,9 +338,16 @@ export function initViewer(canvasElement) {
     // each frame and interpolate between successive points.  The path
     // is treated as a closed loop.
     if (rollingCircleActive && rollingCircleMesh && rollingCirclePathPoints.length > 1) {
-      // Advance parameter along the path.  The speed is the fraction of the
-      // full path traversed per frame (approximate).  Wrap around at 1.0.
-      rollingCircleT += rollingCircleSpeed / rollingCirclePathPoints.length;
+      // Advance parameter along the path using elapsed time so speed is
+      // frame-rate independent.  The speed is the fraction of the full path
+      // traversed per second.  Wrap around at 1.0.
+      if (rollingCircleLastUpdateTime === null) {
+        rollingCircleLastUpdateTime = time || performance.now();
+      }
+      const now = time || performance.now();
+      const deltaSeconds = Math.max(0, (now - rollingCircleLastUpdateTime) / 1000);
+      rollingCircleLastUpdateTime = now;
+      rollingCircleT += (rollingCircleSpeed * deltaSeconds) % 1;
       if (rollingCircleT >= 1.0) {
         rollingCircleT -= 1.0;
       }
@@ -243,6 +362,7 @@ export function initViewer(canvasElement) {
       const y = p0.y + (p1.y - p0.y) * localT;
       const z = p0.z + (p1.z - p0.z) * localT;
       rollingCircleMesh.position.set(x, y, z);
+      updateRollingCircleContact(rollingCircleMesh.position);
     }
 
     // Determine canvas dimensions on each frame
@@ -297,6 +417,7 @@ export function addMeshToScene(meshResponse) {
   if (!scene) {
     throw new Error('Viewer has not been initialized. Call initViewer() first.');
   }
+  stopPerimeterCircleAnimation();
   // Remove existing mesh if present
   if (currentMesh) {
     scene.remove(currentMesh);
@@ -317,6 +438,8 @@ export function addMeshToScene(meshResponse) {
     });
     baseOutlineLines = [];
   }
+  baseOutlineLoops = [];
+  disposeRollingCircleContact();
   // Build geometry from flat arrays
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(meshResponse.vertices, 3));
@@ -406,6 +529,8 @@ export function showBaseOutline(points) {
   if (!points) {
     // Clear stored outline loops when no points are supplied
     baseOutlineLoops = [];
+    stopPerimeterCircleAnimation();
+    disposeRollingCircleContact();
     return;
   }
   if (Array.isArray(points) && points.length > 0) {
@@ -427,6 +552,9 @@ export function showBaseOutline(points) {
   baseOutlineLoops = loops.map((loop) =>
     loop.map((p) => ({ x: p.x, y: p.y, z: p.z }))
   );
+  // Reset contact marker to avoid showing stale positions when the
+  // outline changes.
+  disposeRollingCircleContact();
 
   // Draw each loop as a LineLoop.  Use yellow colour to distinguish
   // perimeter loops from the path (which is red/green).
