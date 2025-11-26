@@ -48,207 +48,13 @@ let currentPathSpheres = [];
 // new perimeter) the existing line objects are removed and disposed.
 let baseOutlineLines = [];
 
-// Store the raw perimeter loops (arrays of {x,y,z}) for animations
-// When showBaseOutline is called, we populate this array with
-// copies of the perimeter loops for later use (e.g. rolling-circle
-// visualisations).  Each element is an array of point objects.
+// Store the raw perimeter loops (arrays of {x,y,z}) for reference. Each
+// element is an array of point objects.
 let baseOutlineLoops = [];
 
-// Small marker to visualise the tangent contact point between the
-// rolling circle and the nearest perimeter loop.  When active, this
-// is positioned on the closest point of the outline to the circle
-// centre.  The marker radius scales with the circle radius.
-let rollingCircleContactMesh = null;
-let rollingCircleContactRadius = 0.2;
-
-// Rolling circle visualisation state.  When a rolling-circle
-// perimeter path is generated, we can animate a red circle along
-// the path.  These variables track the circle mesh, the path
-// points (centre positions), radius, speed and current parameter.
-// When rollingCircleActive is false the circle is not animated.
-let rollingCircleMesh = null;
-let rollingCirclePathPoints = [];
-let rollingCircleRadius = 1.0;
-let rollingCircleSpeed = 0.05; // fraction of path per second
-let rollingCircleT = 0.0;
-let rollingCircleActive = false;
-let rollingCircleLastUpdateTime = null;
-
-/**
- * Create or recreate the rolling circle mesh with the given
- * radius and orientation plane.  Removes any existing circle from
- * the scene.  The plane parameter determines which principal plane
- * the circle lies in: 'xy', 'xz' or 'yz'.
- *
- * @param {number} radius - Circle radius
- * @param {string} plane - One of 'xy', 'xz', 'yz'
- */
-function createRollingCircleMesh(radius, plane) {
-  // Remove existing circle mesh if present
-  if (rollingCircleMesh) {
-    scene.remove(rollingCircleMesh);
-    if (rollingCircleMesh.geometry) rollingCircleMesh.geometry.dispose();
-    if (rollingCircleMesh.material) rollingCircleMesh.material.dispose();
-    rollingCircleMesh = null;
-  }
-  // Build a circle geometry.  Use sufficient segments for a smooth outline.
-  const segments = 64;
-  const geometry = new THREE.CircleGeometry(radius, segments);
-  // Use a wireframe material so the viewer can see through the circle
-  const material = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true });
-  const mesh = new THREE.Mesh(geometry, material);
-  // Orient the circle so its normal aligns with the chosen plane.  By
-  // default, CircleGeometry is centred in the XY plane facing +Z.
-  if (plane === 'xy') {
-    // Default orientation: no rotation needed
-  } else if (plane === 'xz') {
-    // Rotate -90° about X so the normal points along +Y
-    mesh.rotation.x = -Math.PI / 2;
-  } else if (plane === 'yz') {
-    // Rotate 90° about Y so the normal points along +X
-    mesh.rotation.y = Math.PI / 2;
-  }
-  mesh.matrixAutoUpdate = true;
-  scene.add(mesh);
-  rollingCircleMesh = mesh;
-}
-
-/**
- * Remove the tangent contact marker, disposing its resources.
- */
-function disposeRollingCircleContact() {
-  if (rollingCircleContactMesh) {
-    scene.remove(rollingCircleContactMesh);
-    if (rollingCircleContactMesh.geometry) rollingCircleContactMesh.geometry.dispose();
-    if (rollingCircleContactMesh.material) rollingCircleContactMesh.material.dispose();
-    rollingCircleContactMesh = null;
-  }
-}
-
-/**
- * Find the closest point on the stored perimeter loops to the given
- * position. Returns an object with the point and squared distance.
- *
- * @param {THREE.Vector3} position - Position to test
- * @returns {{point: {x:number,y:number,z:number}, dist2: number}|null}
- */
-function findNearestPointOnOutline(position) {
-  if (!baseOutlineLoops.length) return null;
-  let bestPoint = null;
-  let bestDist2 = Infinity;
-
-  const nearestOnSegment = (a, b) => {
-    const ab = new THREE.Vector3(b.x - a.x, b.y - a.y, b.z - a.z);
-    const ap = new THREE.Vector3(position.x - a.x, position.y - a.y, position.z - a.z);
-    const abLen2 = ab.lengthSq();
-    if (abLen2 === 0) return { x: a.x, y: a.y, z: a.z };
-    let t = ap.dot(ab) / abLen2;
-    t = Math.max(0, Math.min(1, t));
-    return {
-      x: a.x + ab.x * t,
-      y: a.y + ab.y * t,
-      z: a.z + ab.z * t,
-    };
-  };
-
-  for (const loop of baseOutlineLoops) {
-    if (!loop || loop.length < 2) continue;
-    for (let i = 0; i < loop.length; i++) {
-      const a = loop[i];
-      const b = loop[(i + 1) % loop.length];
-      const npt = nearestOnSegment(a, b);
-      const dx = npt.x - position.x;
-      const dy = npt.y - position.y;
-      const dz = npt.z - position.z;
-      const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 < bestDist2) {
-        bestDist2 = d2;
-        bestPoint = npt;
-      }
-    }
-  }
-
-  if (!bestPoint) return null;
-  return { point: bestPoint, dist2: bestDist2 };
-}
-
-/**
- * Ensure the contact marker exists and update its position to the
- * nearest point on the stored perimeter outline to the provided
- * centre position. If no outline is available, the marker is removed.
- *
- * @param {THREE.Vector3} centre - Current rolling circle centre
- */
-function updateRollingCircleContact(centre) {
-  if (!scene) return;
-  const nearest = findNearestPointOnOutline(centre);
-  if (!nearest) {
-    disposeRollingCircleContact();
-    return;
-  }
-
-  if (!rollingCircleContactMesh) {
-    const geometry = new THREE.SphereGeometry(rollingCircleContactRadius, 16, 12);
-    const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    rollingCircleContactMesh = new THREE.Mesh(geometry, material);
-    scene.add(rollingCircleContactMesh);
-  }
-
-  rollingCircleContactMesh.position.set(nearest.point.x, nearest.point.y, nearest.point.z);
-}
-
-/**
- * Start the rolling-circle perimeter animation.  The caller must
- * provide the path points (centre positions), circle radius and the
- * plane in which the circle should lie.  Optionally a speed can be
- * provided to adjust how fast the circle moves along the path.  The
- * path points are treated as a closed loop; the circle wraps
- * around when it reaches the end.
- *
- * @param {object} options - Animation options
- * @param {Array<{x:number,y:number,z:number}>} options.pathPoints - Centre path points
- * @param {number} options.radius - Circle radius
- * @param {string} options.plane - Plane ('xy', 'xz', 'yz') for circle orientation
- * @param {number} [options.speed] - Speed as fraction of path per frame (approx.)
- */
-export function startPerimeterCircleAnimation(options = {}) {
-  if (!scene) return;
-  const { pathPoints, radius, plane, speed } = options;
-  if (!pathPoints || !Array.isArray(pathPoints) || pathPoints.length < 2) {
-    console.warn('startPerimeterCircleAnimation: invalid pathPoints');
-    return;
-  }
-  // Copy path points into internal array to avoid external mutation
-  rollingCirclePathPoints = pathPoints.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-  // Set radius and speed, using defaults when inputs are invalid
-  rollingCircleRadius = typeof radius === 'number' && radius > 0 ? radius : 1.0;
-  rollingCircleSpeed = typeof speed === 'number' && speed > 0 ? speed : 0.05;
-  rollingCircleContactRadius = Math.max(rollingCircleRadius * 0.12, 0.05);
-  rollingCircleT = 0.0;
-  rollingCircleActive = true;
-  rollingCircleLastUpdateTime = null;
-  // Create the circle mesh oriented to the selected plane
-  const planeVal = plane || 'xy';
-  createRollingCircleMesh(rollingCircleRadius, planeVal);
-  // Reset contact marker so it can be recreated with updated size
-  disposeRollingCircleContact();
-}
-
-/**
- * Stop the rolling-circle animation and dispose any associated meshes.
- */
-export function stopPerimeterCircleAnimation() {
-  rollingCircleActive = false;
-  rollingCirclePathPoints = [];
-  rollingCircleLastUpdateTime = null;
-  if (rollingCircleMesh) {
-    scene.remove(rollingCircleMesh);
-    if (rollingCircleMesh.geometry) rollingCircleMesh.geometry.dispose();
-    if (rollingCircleMesh.material) rollingCircleMesh.material.dispose();
-    rollingCircleMesh = null;
-  }
-  disposeRollingCircleContact();
-}
+// Minkowski boundary state
+let minkowskiBoundaryLines = [];
+let minkowskiBoundaryLoops = [];
 
 /**
  * Initialize the Three.js viewer.
@@ -333,38 +139,6 @@ export function initViewer(canvasElement) {
     if (keyLight && camera) {
       keyLight.position.copy(camera.position);
     }
-    // Update rolling-circle position if active before rendering.  We
-    // advance a parametric value along the path by a small increment
-    // each frame and interpolate between successive points.  The path
-    // is treated as a closed loop.
-    if (rollingCircleActive && rollingCircleMesh && rollingCirclePathPoints.length > 1) {
-      // Advance parameter along the path using elapsed time so speed is
-      // frame-rate independent.  The speed is the fraction of the full path
-      // traversed per second.  Wrap around at 1.0.
-      if (rollingCircleLastUpdateTime === null) {
-        rollingCircleLastUpdateTime = time || performance.now();
-      }
-      const now = time || performance.now();
-      const deltaSeconds = Math.max(0, (now - rollingCircleLastUpdateTime) / 1000);
-      rollingCircleLastUpdateTime = now;
-      rollingCircleT += (rollingCircleSpeed * deltaSeconds) % 1;
-      if (rollingCircleT >= 1.0) {
-        rollingCircleT -= 1.0;
-      }
-      const totalSegments = rollingCirclePathPoints.length;
-      const fIndex = rollingCircleT * totalSegments;
-      const i0 = Math.floor(fIndex) % totalSegments;
-      const i1 = (i0 + 1) % totalSegments;
-      const localT = fIndex - Math.floor(fIndex);
-      const p0 = rollingCirclePathPoints[i0];
-      const p1 = rollingCirclePathPoints[i1];
-      const x = p0.x + (p1.x - p0.x) * localT;
-      const y = p0.y + (p1.y - p0.y) * localT;
-      const z = p0.z + (p1.z - p0.z) * localT;
-      rollingCircleMesh.position.set(x, y, z);
-      updateRollingCircleContact(rollingCircleMesh.position);
-    }
-
     // Determine canvas dimensions on each frame
     const width = renderer.domElement.clientWidth;
     const height = renderer.domElement.clientHeight;
@@ -417,7 +191,6 @@ export function addMeshToScene(meshResponse) {
   if (!scene) {
     throw new Error('Viewer has not been initialized. Call initViewer() first.');
   }
-  stopPerimeterCircleAnimation();
   // Remove existing mesh if present
   if (currentMesh) {
     scene.remove(currentMesh);
@@ -439,7 +212,16 @@ export function addMeshToScene(meshResponse) {
     baseOutlineLines = [];
   }
   baseOutlineLoops = [];
-  disposeRollingCircleContact();
+  // Clear Minkowski boundary visuals when loading a new mesh
+  if (minkowskiBoundaryLines.length) {
+    minkowskiBoundaryLines.forEach((line) => {
+      scene.remove(line);
+      if (line.geometry) line.geometry.dispose();
+      if (line.material) line.material.dispose();
+    });
+    minkowskiBoundaryLines = [];
+  }
+  minkowskiBoundaryLoops = [];
   // Build geometry from flat arrays
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(meshResponse.vertices, 3));
@@ -529,8 +311,6 @@ export function showBaseOutline(points) {
   if (!points) {
     // Clear stored outline loops when no points are supplied
     baseOutlineLoops = [];
-    stopPerimeterCircleAnimation();
-    disposeRollingCircleContact();
     return;
   }
   if (Array.isArray(points) && points.length > 0) {
@@ -548,13 +328,10 @@ export function showBaseOutline(points) {
   } else {
     return;
   }
-  // Store loops for later (e.g. rolling-circle visualisation)
+  // Store loops for later reference
   baseOutlineLoops = loops.map((loop) =>
     loop.map((p) => ({ x: p.x, y: p.y, z: p.z }))
   );
-  // Reset contact marker to avoid showing stale positions when the
-  // outline changes.
-  disposeRollingCircleContact();
 
   // Draw each loop as a LineLoop.  Use yellow colour to distinguish
   // perimeter loops from the path (which is red/green).
@@ -584,6 +361,68 @@ export function showBaseOutline(points) {
     baseOutlineLines.push(line);
     scene.add(line);
   });
+}
+
+/**
+ * Display Minkowski boundary loops in the scene.
+ *
+ * @param {Array<Array<{x:number,y:number,z:number}>>} loops - Collection of loops
+ */
+export function showMinkowskiBoundary(loops) {
+  if (!scene) {
+    return;
+  }
+
+  // Remove existing Minkowski boundary lines
+  for (const line of minkowskiBoundaryLines) {
+    scene.remove(line);
+    if (line.geometry) {
+      line.geometry.dispose();
+    }
+    if (line.material) {
+      line.material.dispose();
+    }
+  }
+  minkowskiBoundaryLines = [];
+  minkowskiBoundaryLoops = [];
+
+  if (!loops || !Array.isArray(loops) || loops.length === 0) {
+    return;
+  }
+
+  minkowskiBoundaryLoops = loops.map((loop) =>
+    loop.map((p) => ({ x: p.x, y: p.y, z: p.z }))
+  );
+
+  const material = new THREE.LineBasicMaterial({
+    color: 0xff00ff,
+    linewidth: 2,
+  });
+
+  for (const loop of minkowskiBoundaryLoops) {
+    if (!loop || loop.length < 2) {
+      continue;
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    const positions = [];
+
+    for (const p of loop) {
+      positions.push(p.x, p.y, p.z);
+    }
+
+    const first = loop[0];
+    positions.push(first.x, first.y, first.z);
+
+    geometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(positions, 3)
+    );
+
+    const lineLoop = new THREE.LineLoop(geometry, material);
+    minkowskiBoundaryLines.push(lineLoop);
+    scene.add(lineLoop);
+  }
 }
 
 /**

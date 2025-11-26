@@ -25,7 +25,7 @@ import {
   showPath,
   playFlythrough,
   showBaseOutline,
-  startPerimeterCircleAnimation,
+  showMinkowskiBoundary,
 } from './viewer.js';
 import { getCurrentPathPoints } from './pathOverlay.js';
 import { setStatus, setBusy } from './ui.js';
@@ -45,15 +45,6 @@ let currentModelId = null;
 let currentPathId = null;
 // Store last computed path points for validation/export/play
 let lastPathPoints = [];
-
-// Store the radius and plane used when generating a rolling-circle
-// perimeter path.  When a perimeter path is computed with the
-// rolling-circle option enabled, these values are set so the
-// animation button can drive a circle of the correct size along
-// the correct plane.  If null, no rolling-circle information is
-// available.
-let lastCircleRadius = null;
-let lastPerimeterPlane = 'xy';
 
 // The setStatus and setBusy helpers are imported from ui.js
 
@@ -83,9 +74,6 @@ function bootstrap() {
   // New controls introduced in v0.9.11 for rolling‑circle perimeter paths
   const useRollingCircleCheckbox = document.getElementById('useRollingCircleCheckbox');
   const circleDiameterInput = document.getElementById('circleDiameterInput');
-
-  // Button to play the rolling-circle perimeter animation (v0.9.15.2)
-  const btnPlayRollingCircle = document.getElementById('btnPlayRollingCircle');
   const canvas = document.getElementById('viewerCanvas');
   const modelListDiv = document.getElementById('modelList');
   // Initialize the 3D viewer
@@ -428,16 +416,18 @@ function bootstrap() {
       const pathResponse = await createPath(currentModelId, params);
       currentPathId = pathResponse.pathId;
       lastPathPoints = pathResponse.points.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-      // If this is a perimeter path using a rolling-circle offset, record
-      // the circle radius and plane so the animation can be played later.
-      if (strategy === 'perimeter' && useRollingCircle && circleDiameterVal && circleDiameterVal > 0) {
-        lastCircleRadius = circleDiameterVal * 0.5;
-        lastPerimeterPlane = planeVal || 'xy';
-      } else {
-        lastCircleRadius = null;
-      }
       // Display path and enable editing
       showPath(lastPathPoints);
+      // Render Minkowski boundary loops when available
+      const minkowskiLoops = pathResponse.minkowskiBoundaryLoops;
+      if (minkowskiLoops && Array.isArray(minkowskiLoops) && minkowskiLoops.length > 0) {
+        const normalizedLoops = minkowskiLoops.map((loop) =>
+          loop.map((p) => ({ x: p.x, y: p.y, z: p.z }))
+        );
+        showMinkowskiBoundary(normalizedLoops);
+      } else {
+        showMinkowskiBoundary([]);
+      }
       // Compose status message including plane and height offset when using the
       // perimeter strategy.  For orbit strategy we omit these details.  We
       // also surface extra metadata such as self‑intersection and offset
@@ -488,6 +478,7 @@ function bootstrap() {
     } catch (error) {
       console.error(error);
       setStatus(error.message || 'Failed to compute path.', true);
+      showMinkowskiBoundary([]);
     } finally {
       setBusy(false);
     }
@@ -573,31 +564,6 @@ function bootstrap() {
     }
     playFlythrough(lastPathPoints, 10);
     setStatus('Playing flythrough…');
-  });
-
-  // Play rolling-circle perimeter animation handler (v0.9.15.2)
-  btnPlayRollingCircle?.addEventListener('click', () => {
-    // Ensure we have a path and radius available
-    if (!lastPathPoints || lastPathPoints.length < 2) {
-      setStatus('No rolling-circle path available. Generate a perimeter path with rolling circle enabled first.', true);
-      return;
-    }
-    if (!lastCircleRadius) {
-      setStatus('Circle radius unknown. Ensure rolling circle is enabled and a diameter is set before generating the path.', true);
-      return;
-    }
-    try {
-      startPerimeterCircleAnimation({
-        pathPoints: lastPathPoints,
-        radius: lastCircleRadius,
-        plane: lastPerimeterPlane || 'xy',
-        speed: 0.05,
-      });
-      setStatus('Playing rolling-circle perimeter animation…');
-    } catch (err) {
-      console.error(err);
-      setStatus('Failed to start rolling-circle animation.', true);
-    }
   });
 
   // In v0.9.9 the outline preview is no longer recomputed automatically

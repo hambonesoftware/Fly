@@ -186,6 +186,7 @@ def generate_rolling_circle_perimeter_path(
         closed path.  Returns an empty list if no perimeter could be computed.
     """
     logger = logging.getLogger(__name__)
+    generate_rolling_circle_perimeter_path._last_minkowski_boundary_loops = []  # type: ignore[attr-defined]
     prefix = "[RollingCirclePath]"
     # Start overall timer
     t_start = time.perf_counter()
@@ -260,6 +261,7 @@ def generate_rolling_circle_perimeter_path(
     if detail_norm not in {"low", "medium", "high", "auto"}:
         detail_norm = "auto"
     all_paths: list[list[PathPoint]] = []
+    minkowski_boundary_loops: list[list[PathPoint]] = []
     # Process each loop independently
     for uv_loop, area_val in zip(loops_uv, loops_area):
         # Offset the polygon outward
@@ -313,6 +315,13 @@ def generate_rolling_circle_perimeter_path(
         # Lift sampled UV coordinates back into 3D
         t_lift0 = time.perf_counter()
         try:
+            boundary_pts3d = lift_uv_to_3d(offset_uv, slice_plane)
+            minkowski_boundary_loops.append(
+                [PathPoint(x=p[0], y=p[1], z=p[2]) for p in boundary_pts3d]
+            )
+        except Exception:
+            logger.error(f"{prefix} error lifting offset UV to 3D for Minkowski loop")
+        try:
             pts3d = lift_uv_to_3d(sampled_uv, slice_plane)
         except Exception as exc:
             logger.error(f"{prefix} error lifting UV to 3D: {exc}")
@@ -326,6 +335,7 @@ def generate_rolling_circle_perimeter_path(
     # Total time taken
     t_end = time.perf_counter()
     logger.info(f"{prefix} total time: {t_end - t_start:.4f}s, paths={len(all_paths)}")
+    generate_rolling_circle_perimeter_path._last_minkowski_boundary_loops = minkowski_boundary_loops  # type: ignore[attr-defined]
     return all_paths
 
 # Strategy identifiers used by the path planner.  These constants
@@ -469,6 +479,7 @@ def generate_perimeter_path(
     # Consumers such as the API layer can inspect ``generate_perimeter_path._last_meta``
     # after calling this function to enrich the response metadata.
     generate_perimeter_path._last_meta = None  # type: ignore[attr-defined]
+    generate_perimeter_path._last_minkowski_boundary_loops = None  # type: ignore[attr-defined]
 
     # Attempt to compute a slice‑based or outline‑based perimeter path when a model_id is provided.
     # This pipeline either slices the model mesh (legacy behaviour) or uses the
@@ -519,6 +530,14 @@ def generate_perimeter_path(
                         samples_per_side=samples_per_side,
                     )
                     if rc_paths:
+                        try:
+                            generate_perimeter_path._last_minkowski_boundary_loops = getattr(
+                                generate_rolling_circle_perimeter_path,
+                                "_last_minkowski_boundary_loops",
+                                None,
+                            )
+                        except Exception:
+                            generate_perimeter_path._last_minkowski_boundary_loops = None  # type: ignore[attr-defined]
                         # Record metadata on the function for API consumption
                         norm_detail = (detail or "auto").strip().lower()
                         if norm_detail not in {"low", "medium", "high", "auto"}:
@@ -595,6 +614,7 @@ def generate_perimeter_path(
                     else:
                         use_spline_local = smoothness > 0.0
                     all_paths: list[list[PathPoint]] = []
+                    minkowski_boundary_loops: list[list[PathPoint]] = []
                     any_self = False
                     any_adjusted = False
                     base_outline_points_multi: list[list[PathPoint]] = []
@@ -619,6 +639,13 @@ def generate_perimeter_path(
                                 break
                             offset_uv_local = offset_polygon_2d(uv_loop, effective_offset, area_hint=area_val)
                             attempts += 1
+                        try:
+                            boundary_pts3d_local = lift_uv_to_3d(offset_uv_local, slice_plane)
+                            minkowski_boundary_loops.append(
+                                [PathPoint(x=p[0], y=p[1], z=p[2]) for p in boundary_pts3d_local]
+                            )
+                        except Exception:
+                            pass
                         any_self = any_self or self_intersects
                         any_adjusted = any_adjusted or adjusted
                         base_tol_local = choose_simplification_tolerance(offset_uv_local)
@@ -684,6 +711,9 @@ def generate_perimeter_path(
                             outline0 = base_outline_points_multi[0]
                             meta["baseOutline"] = [ {"x": p.x, "y": p.y, "z": p.z} for p in outline0 ]
                             meta["baseOutlinePointCount"] = len(outline0)
+                    generate_perimeter_path._last_minkowski_boundary_loops = (
+                        minkowski_boundary_loops if minkowski_boundary_loops else None
+                    )  # type: ignore[attr-defined]
                     generate_perimeter_path._last_meta = meta  # type: ignore[attr-defined]
                     if island_mode != "multi" and last_simple_uv is not None:
                         try:
@@ -790,6 +820,15 @@ def generate_perimeter_path(
                 detail_norm = (detail or "auto").strip().lower()
                 if detail_norm not in {"low", "medium", "high", "auto"}:
                     detail_norm = "auto"
+
+                # Record Minkowski boundary loop prior to simplification
+                try:
+                    boundary_pts3d = lift_uv_to_3d(offset_uv, slice_plane)
+                    generate_perimeter_path._last_minkowski_boundary_loops = [
+                        [PathPoint(x=p[0], y=p[1], z=p[2]) for p in boundary_pts3d]
+                    ]  # type: ignore[attr-defined]
+                except Exception:
+                    generate_perimeter_path._last_minkowski_boundary_loops = None  # type: ignore[attr-defined]
 
                 # Compute base tolerance from polygon size
                 base_tol = choose_simplification_tolerance(offset_uv)

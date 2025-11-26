@@ -110,6 +110,7 @@ async def create_path(model_id: str, body: PathCreateRequest) -> PathResponse:
     strategy = body.strategy
     points: list[PathPoint]
     length: float
+    minkowski_boundary_loops = None
     if strategy == PERIMETER_STRATEGY:
         # Derive per‑side sampling: use one quarter of the requested
         # resolution for each straight segment, but enforce a minimum.
@@ -168,6 +169,22 @@ async def create_path(model_id: str, body: PathCreateRequest) -> PathResponse:
             dz = p1.z - p0.z
             length += math.sqrt(dx * dx + dy * dy + dz * dz)
         strategy_used = PERIMETER_STRATEGY
+        try:
+            from ..services import path_planner as _pp
+
+            minkowski_loops_attr = getattr(
+                _pp.generate_perimeter_path, "_last_minkowski_boundary_loops", None
+            )
+            if minkowski_loops_attr:
+                minkowski_boundary_loops = [
+                    [PathPoint(x=p.x, y=p.y, z=p.z) for p in loop]
+                    for loop in minkowski_loops_attr
+                    if loop
+                ]
+            else:
+                minkowski_boundary_loops = None
+        except Exception:
+            minkowski_boundary_loops = None
     elif strategy == ORBIT_STRATEGY:
         # Generate a circular orbit path around the bounding box
         points = generate_orbit_path(
@@ -266,12 +283,14 @@ async def create_path(model_id: str, body: PathCreateRequest) -> PathResponse:
         "bbox_min": bbox_min,
         "bbox_max": bbox_max,
         "controlPoints": control_points,
+        "minkowskiBoundaryLoops": minkowski_boundary_loops if strategy_used == PERIMETER_STRATEGY else None,
     }
     return PathResponse(
         pathId=path_id,
         modelId=model_id,
         points=points,
         metadata=metadata,
+        minkowskiBoundaryLoops=minkowski_boundary_loops if strategy_used == PERIMETER_STRATEGY else None,
     )
 
 
