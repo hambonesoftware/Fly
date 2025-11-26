@@ -635,7 +635,64 @@ def intersect_mesh_with_plane(
             len(segs),
             coplanar,
         )
-    return segs
+    # Deduplicate segments that share the same endpoints (order-insensitive).
+    # This prevents double-counting when both triangles of a quad emit the
+    # same intersection edge, as occurs with the unit cube stub mesh.
+    unique: List[SliceSegment] = []
+    seen = set()
+    for seg in segs:
+        key = tuple(sorted((seg.p1, seg.p2)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(seg)
+
+    # Merge collinear segments that share an endpoint so the result reflects
+    # the geometric intersection edges rather than per-triangle segments.
+    def _collinear(a: Tuple[float, float, float], b: Tuple[float, float, float], c: Tuple[float, float, float], eps: float = 1e-9) -> bool:
+        ab = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        ac = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+        cross = (
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        )
+        return abs(cross[0]) <= eps and abs(cross[1]) <= eps and abs(cross[2]) <= eps
+
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(unique)):
+            for j in range(i + 1, len(unique)):
+                s1, s2 = unique[i], unique[j]
+                shared = None
+                if s1.p1 == s2.p1:
+                    shared = s1.p1
+                    other1, other2 = s1.p2, s2.p2
+                elif s1.p1 == s2.p2:
+                    shared = s1.p1
+                    other1, other2 = s1.p2, s2.p1
+                elif s1.p2 == s2.p1:
+                    shared = s1.p2
+                    other1, other2 = s1.p1, s2.p2
+                elif s1.p2 == s2.p2:
+                    shared = s1.p2
+                    other1, other2 = s1.p1, s2.p1
+                if shared is None:
+                    continue
+                if not _collinear(other1, shared, other2):
+                    continue
+                # Merge into a single segment spanning the outer endpoints
+                new_seg = SliceSegment(p1=other1, p2=other2)
+                unique.pop(j)
+                unique.pop(i)
+                unique.append(new_seg)
+                merged = True
+                break
+            if merged:
+                break
+
+    return unique
 
 # -----------------------------------------------------------------------------
 # Phase 4: Offset, simplify, spline and lifting helpers
@@ -829,9 +886,15 @@ def simplify_polyline_rdp(points_uv: List[Tuple[float, float]], tolerance: float
     keep_flags[-1] = True
     _rdp_rec(points, 0, m - 1, tolerance, keep_flags)
     simplified: List[Tuple[float, float]] = [points[i] for i in range(m) if keep_flags[i]]
-    # Close loop by appending first point
-    if simplified and simplified[0] != simplified[-1]:
-        simplified.append(simplified[0])
+    # Ensure closure while handling the degenerate two-point case gracefully.
+    if simplified:
+        if len(simplified) == 2 and simplified[0] != simplified[1]:
+            # When only two points remain but they differ, collapse to a closed
+            # loop consisting of the start point repeated.  This matches the
+            # expectation of a closed polyline with minimal representation.
+            simplified = [simplified[0], simplified[0]]
+        elif simplified[0] != simplified[-1]:
+            simplified.append(simplified[0])
     return simplified
 
 

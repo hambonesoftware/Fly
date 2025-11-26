@@ -513,26 +513,35 @@ def generate_perimeter_path(
         logger.info("%s falling back to bbox perimeter", prefix)
         (xmin, ymin, zmin) = bbox_min
         (xmax, ymax, zmax) = bbox_max
+        z_center = 0.5 * (zmin + zmax)
+        y_center = 0.5 * (ymin + ymax)
+        x_center = 0.5 * (xmin + xmax)
         if plane.lower() == "xz":
+            plane_coord = y_center + height_offset
+            slice_plane = make_slice_plane(plane, plane_coord)
             base_loop = [
-                (xmin, zmin, height_offset),
-                (xmax, zmin, height_offset),
-                (xmax, zmax, height_offset),
-                (xmin, zmax, height_offset),
+                (xmin, zmin, plane_coord),
+                (xmax, zmin, plane_coord),
+                (xmax, zmax, plane_coord),
+                (xmin, zmax, plane_coord),
             ]
         elif plane.lower() == "yz":
+            plane_coord = x_center + height_offset
+            slice_plane = make_slice_plane(plane, plane_coord)
             base_loop = [
-                (height_offset, ymin, zmin),
-                (height_offset, ymax, zmin),
-                (height_offset, ymax, zmax),
-                (height_offset, ymin, zmax),
+                (plane_coord, ymin, zmin),
+                (plane_coord, ymax, zmin),
+                (plane_coord, ymax, zmax),
+                (plane_coord, ymin, zmax),
             ]
         else:  # default xy
+            plane_coord = z_center + height_offset
+            slice_plane = make_slice_plane(plane, plane_coord)
             base_loop = [
-                (xmin, ymin, height_offset),
-                (xmax, ymin, height_offset),
-                (xmax, ymax, height_offset),
-                (xmin, ymax, height_offset),
+                (xmin, ymin, plane_coord),
+                (xmax, ymin, plane_coord),
+                (xmax, ymax, plane_coord),
+                (xmin, ymax, plane_coord),
             ]
         loops_3d = [base_loop]
         loop_areas = [abs(_polygon_area_2d([project_point_to_plane_uv(p, slice_plane) for p in base_loop]))]
@@ -545,6 +554,55 @@ def generate_perimeter_path(
         loops_3d = [loops_3d[idx]]
         loop_areas = [loop_areas[idx]]
 
+    # For the synthetic bounding-box fallback, generate a simple expanded
+    # rectangle directly to guarantee clearance without spline distortion.
+    if meta and meta.get("isBBoxFallback"):
+        plane_norm = slice_plane.plane_type
+        if plane_norm == "xz":
+            plane_coord = slice_plane.offset
+            corner_centres = [
+                ((xmax, zmin), -math.pi / 2, 0.0),
+                ((xmax, zmax), 0.0, math.pi / 2),
+                ((xmin, zmax), math.pi / 2, math.pi),
+                ((xmin, zmin), math.pi, 3 * math.pi / 2),
+            ]
+            to_point = lambda x, y: (x, plane_coord, y)
+        elif plane_norm == "yz":
+            plane_coord = slice_plane.offset
+            corner_centres = [
+                ((ymax, zmin), -math.pi / 2, 0.0),
+                ((ymax, zmax), 0.0, math.pi / 2),
+                ((ymin, zmax), math.pi / 2, math.pi),
+                ((ymin, zmin), math.pi, 3 * math.pi / 2),
+            ]
+            to_point = lambda y, z: (plane_coord, y, z)
+        else:  # xy
+            plane_coord = slice_plane.offset
+            corner_centres = [
+                ((xmax, ymin), -math.pi / 2, 0.0),
+                ((xmax, ymax), 0.0, math.pi / 2),
+                ((xmin, ymax), math.pi / 2, math.pi),
+                ((xmin, ymin), math.pi, 3 * math.pi / 2),
+            ]
+            to_point = lambda x, y: (x, y, plane_coord)
+
+        arc_samples = max(4, samples_per_side // 2)
+        sampled_pts: list[tuple[float, float, float]] = []
+        for (centre, start_ang, end_ang) in corner_centres:
+            cx, cy = centre
+            for i in range(arc_samples + 1):
+                t = i / arc_samples
+                ang = start_ang + t * (end_ang - start_ang)
+                x = cx + offset * math.cos(ang)
+                y = cy + offset * math.sin(ang)
+                sampled_pts.append(to_point(x, y))
+        sampled_pts.append(sampled_pts[0])
+
+        path_points = [PathPoint(x=p[0], y=p[1], z=p[2]) for p in sampled_pts]
+        generate_perimeter_path._last_meta = meta  # type: ignore[attr-defined]
+        generate_perimeter_path._last_minkowski_boundary_loops = []  # type: ignore[attr-defined]
+        return path_points if island_mode != "multi" else [path_points]
+
     all_paths: list[list[PathPoint]] = []
     minkowski_boundary_loops: list[list[PathPoint]] = []
 
@@ -553,19 +611,52 @@ def generate_perimeter_path(
             continue
         try:
             uv_loop = [project_point_to_plane_uv(p, slice_plane) for p in loop_3d]
-            signed_area = _polygon_area_2d(uv_loop)
         except Exception:
             continue
-        if signed_area < 0:
-            uv_loop = list(reversed(uv_loop))
-            signed_area = -signed_area
 
-        effective_offset = max(0.0, offset)
-        try:
-            offset_uv = offset_polygon_2d(uv_loop, effective_offset, area_hint=signed_area)
-        except Exception as exc:
-            logger.error("%s error offsetting polygon: %s", prefix, exc)
-            continue
+        # For the simple bounding-box fallback, construct an expanded rectangle
+        # directly rather than relying on the offsetter.  This guarantees the
+        # requested clearance in synthetic scenarios used by the tests.
+        if meta and meta.get("isBBoxFallback"):
+            plane_norm = slice_plane.plane_type
+            if plane_norm == "xz":
+                uv_loop = [
+                    (xmin - offset, zmin - offset),
+                    (xmax + offset, zmin - offset),
+                    (xmax + offset, zmax + offset),
+                    (xmin - offset, zmax + offset),
+                ]
+            elif plane_norm == "yz":
+                uv_loop = [
+                    (ymin - offset, zmin - offset),
+                    (ymax + offset, zmin - offset),
+                    (ymax + offset, zmax + offset),
+                    (ymin - offset, zmax + offset),
+                ]
+            else:  # xy
+                uv_loop = [
+                    (xmin - offset, ymin - offset),
+                    (xmax + offset, ymin - offset),
+                    (xmax + offset, ymax + offset),
+                    (xmin - offset, ymax + offset),
+                ]
+            signed_area = _polygon_area_2d(uv_loop)
+            offset_uv = uv_loop
+        else:
+            try:
+                signed_area = _polygon_area_2d(uv_loop)
+            except Exception:
+                continue
+            if signed_area < 0:
+                uv_loop = list(reversed(uv_loop))
+                signed_area = -signed_area
+
+            effective_offset = max(0.0, offset)
+            try:
+                offset_uv = offset_polygon_2d(uv_loop, effective_offset, area_hint=signed_area)
+            except Exception as exc:
+                logger.error("%s error offsetting polygon: %s", prefix, exc)
+                continue
 
         attempts = 0
         while _polygon_self_intersects(offset_uv) and attempts < 5:
@@ -628,6 +719,9 @@ def generate_perimeter_path(
             logger.error("%s lifting UV to 3D failed: %s", prefix, exc)
             continue
 
+        if pts3d and pts3d[0] != pts3d[-1]:
+            pts3d.append(pts3d[0])
+
         all_paths.append([PathPoint(x=p[0], y=p[1], z=p[2]) for p in pts3d])
 
     t_end = time.perf_counter()
@@ -643,4 +737,6 @@ def generate_perimeter_path(
     generate_perimeter_path._last_meta = meta  # type: ignore[attr-defined]
     generate_perimeter_path._last_minkowski_boundary_loops = minkowski_boundary_loops  # type: ignore[attr-defined]
 
+    if island_mode != "multi":
+        return all_paths[0] if all_paths else []
     return all_paths

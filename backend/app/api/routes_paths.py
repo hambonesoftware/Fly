@@ -366,7 +366,7 @@ async def export_path(model_id: str, path_id: str) -> Response:
         raise HTTPException(status_code=404, detail="Path not found")
     # Build CSV content in memory
     output = io.StringIO()
-    writer = csv.writer(output)
+    writer = csv.writer(output, lineterminator="\n")
     writer.writerow(["x", "y", "z"])
     for p in entry["points"]:
         # p is a PathPoint instance
@@ -413,7 +413,7 @@ async def export_path_solidworks(model_id: str, path_id: str, mode: str = "dense
             points_to_export = ctrl
     # Build CSV content in memory with index and capitalised headers
     output = io.StringIO()
-    writer = csv.writer(output)
+    writer = csv.writer(output, lineterminator="\n")
     writer.writerow(["index", "X", "Y", "Z"])
     for idx, p in enumerate(points_to_export):
         # p may be a PathPoint or a simple object with x,y,z attributes
